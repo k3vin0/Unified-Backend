@@ -1,0 +1,12 @@
+# Air configuration
+root = "."
+tmp_dir = "tmp"
+
+[build]
+  cmd = "go build -o ./tmp/main ./cmd/app/main.go"
+  bin = "./tmp/main"
+  include_ext = ["go", "tmpl", "html"]
+  exclude_dir = ["assets", "tmp", "vendor", "frontend"]
+
+[log]
+  time = true
