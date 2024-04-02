@@ -13,14 +13,72 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
-type Result = []Ingredients
+type IngredientsResult = []Ingredient
+type RecipeResult = []RecipeReturnType
 
-type Ingredients struct {
+type Ingredient struct {
 	Name     string `bson:"name"`
 	Calories int    `bson:"calories_per_gram"`
+}
+
+type RecipeReturnType struct {
+	Name string               `bson:"name"`
+	ID   []primitive.ObjectID `bson:"ingredients"`
+}
+
+type Recipe struct {
+	Name        string
+	Ingredients []Ingredient
+}
+
+func getIngredientByID(client *mongo.Client, ingredientID primitive.ObjectID) (*Ingredient, error) {
+	collection := client.Database("Recipe_Service").Collection("Ingredients")
+	filter := bson.D{{Key: "_id", Value: ingredientID}}
+
+	var ingredient Ingredient
+	err := collection.FindOne(context.TODO(), filter).Decode(&ingredient)
+	if err != nil {
+		return nil, err
+	}
+
+	return &ingredient, nil
+}
+
+func getAllRecipes(client *mongo.Client) (*[]Recipe, error) {
+	collection := client.Database("Recipe_Service").Collection("recipes")
+	filter := bson.D{{}}
+
+	cur, err := collection.Find(context.TODO(), filter)
+	if err != nil {
+		return nil, err // Consider how to handle errors more gracefully
+	}
+	defer cur.Close(context.TODO())
+
+	var results RecipeResult
+	if err = cur.All(context.TODO(), &results); err != nil {
+		return nil, err
+	}
+	var ingredientsResponse []Ingredient
+	var finalReturnValue []Recipe = make([]Recipe, 0)
+	for _, ingredient := range results {
+		for _, id := range ingredient.ID {
+
+			ingredient, err := getIngredientByID(client, id)
+			if err != nil {
+				return nil, err
+			}
+			ingredientsResponse = append(ingredientsResponse, *ingredient)
+		}
+		finalReturnValue = append(finalReturnValue, Recipe{Name: ingredient.Name, Ingredients: ingredientsResponse})
+
+		fmt.Printf("Name: %s, Calories: %v\n", ingredient.Name, ingredient.ID)
+	}
+
+	return &finalReturnValue, err
 }
 
 // TODO: Implement HTTP handlers
@@ -38,20 +96,46 @@ func Handler(client *mongo.Client) {
 		}
 		defer cur.Close(context.TODO())
 
-		var results Result
+		var results IngredientsResult
 		if err = cur.All(context.TODO(), &results); err != nil {
 			log.Fatal(err)
 		}
 
 		for _, ingredient := range results {
-
-			fmt.Printf("Name: %s, Calories: %d\n", ingredient.Name, ingredient.Calories)
+			fmt.Printf("Name: %s, Ingredient: %d\n", ingredient.Name, ingredient.Calories)
 		}
 		return c.JSON(200, results)
 	})
 
+	e.GET("/ingredients", func(c echo.Context) error {
+		idStr := c.QueryParam("id") // example ObjectId as a string
+		objID, err := primitive.ObjectIDFromHex(idStr)
+		if err != nil {
+			return err
+		}
+
+		ingredient, err := getIngredientByID(client, objID)
+
+		if err != nil {
+			echo.NewHTTPError(http.StatusInternalServerError, "No Ingredient with specified id ")
+		}
+
+		return c.JSON(http.StatusOK, ingredient)
+
+	})
+
+	e.GET("/recipes", func(c echo.Context) error {
+
+		result, err := getAllRecipes(client)
+		if err != nil {
+			return echo.NewHTTPError(http.StatusInternalServerError, "unable to fetch recipes")
+		}
+
+		return c.JSON(200, result)
+	})
+
 	e.POST("/ingredients", func(c echo.Context) error {
-		var newIngredients []Ingredients // Assuming Ingredient is your struct type for the collection
+		var newIngredients []Ingredient // Assuming Ingredient is your struct type for the collection
 
 		// Bind the request body to newIngredients slice
 		if err := c.Bind(&newIngredients); err != nil {
