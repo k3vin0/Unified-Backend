@@ -21,13 +21,25 @@ type IngredientsResult = []Ingredient
 type RecipeResult = []RecipeReturnType
 
 type Ingredient struct {
-	Name     string `bson:"name"`
-	Calories int    `bson:"calories_per_gram"`
+	ObjectID primitive.ObjectID `bson:"_id"`
+	Name     string             `bson:"name"`
+	Calories int                `bson:"calories_per_gram"`
 }
 
 type RecipeReturnType struct {
-	Name string               `bson:"name"`
-	ID   []primitive.ObjectID `bson:"ingredients"`
+	Name string             `bson:"name"`
+	ID   []IngredientIDType `bson:"ingredients"`
+}
+
+// IngredientIDType to match the incoming JSON structure for ingredients.
+type IngredientIDType struct {
+	ObjectID string `json:"ObjectID"`
+}
+
+// RecipePostType adjusted to include a slice of IngredientIDType.
+type RecipePostType struct {
+	Name        string             `json:"Name"`
+	Ingredients []IngredientIDType `json:"Ingredients"`
 }
 
 type Recipe struct {
@@ -35,12 +47,18 @@ type Recipe struct {
 	Ingredients []Ingredient
 }
 
-func getIngredientByID(client *mongo.Client, ingredientID primitive.ObjectID) (*Ingredient, error) {
+func getIngredientByID(client *mongo.Client, ingredientID string) (*Ingredient, error) {
 	collection := client.Database("Recipe_Service").Collection("Ingredients")
-	filter := bson.D{{Key: "_id", Value: ingredientID}}
+	objID, err := primitive.ObjectIDFromHex(ingredientID)
+
+	if err != nil {
+		return nil, err
+	}
+
+	filter := bson.D{{Key: "_id", Value: objID}}
 
 	var ingredient Ingredient
-	err := collection.FindOne(context.TODO(), filter).Decode(&ingredient)
+	err = collection.FindOne(context.TODO(), filter).Decode(&ingredient)
 	if err != nil {
 		return nil, err
 	}
@@ -67,7 +85,7 @@ func getAllRecipes(client *mongo.Client) (*[]Recipe, error) {
 	for _, ingredient := range results {
 		for _, id := range ingredient.ID {
 
-			ingredient, err := getIngredientByID(client, id)
+			ingredient, err := getIngredientByID(client, id.ObjectID)
 			if err != nil {
 				return nil, err
 			}
@@ -101,20 +119,22 @@ func Handler(client *mongo.Client) {
 			log.Fatal(err)
 		}
 
+		fmt.Print(results)
+
 		for _, ingredient := range results {
 			fmt.Printf("Name: %s, Ingredient: %d\n", ingredient.Name, ingredient.Calories)
 		}
 		return c.JSON(200, results)
 	})
 
-	e.GET("/ingredients", func(c echo.Context) error {
+	e.GET("/ingredient", func(c echo.Context) error {
 		idStr := c.QueryParam("id") // example ObjectId as a string
-		objID, err := primitive.ObjectIDFromHex(idStr)
-		if err != nil {
-			return err
+
+		if idStr == "" {
+			return echo.NewHTTPError(http.StatusBadRequest, "No params provided")
 		}
 
-		ingredient, err := getIngredientByID(client, objID)
+		ingredient, err := getIngredientByID(client, idStr)
 
 		if err != nil {
 			echo.NewHTTPError(http.StatusInternalServerError, "No Ingredient with specified id ")
@@ -145,6 +165,7 @@ func Handler(client *mongo.Client) {
 		// Prepare a slice of interface{} to hold the documents for insertion
 		var docs []interface{}
 		for _, ingredient := range newIngredients {
+			// fmt.Print(ingredient.ObjectID)
 			docs = append(docs, ingredient)
 		}
 
@@ -160,6 +181,40 @@ func Handler(client *mongo.Client) {
 		return c.JSON(http.StatusCreated, result.InsertedIDs)
 	})
 
+	e.POST("/recipes", func(c echo.Context) error {
+		var newRecipes []RecipePostType // Assuming Recipes is your struct type for the collection
+
+		// Bind the request body to newRecipes slice
+		if err := c.Bind(&newRecipes); err != nil {
+			return echo.NewHTTPError(http.StatusBadRequest, "Invalid input")
+		}
+
+		// Prepare a slice of interface{} to hold the documents for insertion
+		var docs []interface{}
+		for _, recipe := range newRecipes {
+			// Convert IngredientIDType to primitive.ObjectID
+			for i, ingredient := range recipe.Ingredients {
+				if oid, err := primitive.ObjectIDFromHex(ingredient.ObjectID); err == nil {
+					recipe.Ingredients[i] = IngredientIDType{ObjectID: oid.Hex()}
+				} else {
+					// Handle error if conversion fails
+					return echo.NewHTTPError(http.StatusBadRequest, "Invalid ObjectID in Ingredients")
+				}
+			}
+			docs = append(docs, recipe)
+		}
+
+		// Inserting the documents into the collection
+		collection := client.Database("Recipe_Service").Collection("recipes")
+		result, err := collection.InsertMany(context.TODO(), docs)
+		if err != nil {
+			// Handle error appropriately
+			return echo.NewHTTPError(http.StatusInternalServerError, "Failed to insert recipes")
+		}
+
+		// Respond with the result of the insert operation
+		return c.JSON(http.StatusCreated, result.InsertedIDs)
+	})
 	e.DELETE("/ingredients/:name", func(c echo.Context) error {
 		name := c.Param("name")
 
@@ -179,6 +234,30 @@ func Handler(client *mongo.Client) {
 		return c.JSON(http.StatusOK, map[string]interface{}{
 			"message": "Ingredient successfully deleted",
 			"name":    name,
+		})
+	})
+	e.DELETE("/recipes/:id", func(c echo.Context) error {
+		id := c.Param("id")
+		objID, err := primitive.ObjectIDFromHex(id)
+		if err != nil {
+			return echo.NewHTTPError(http.StatusInternalServerError, "Could not convert hex to object ID")
+		}
+
+		filter := bson.D{{Key: "_id", Value: objID}}
+
+		collection := client.Database("Recipe_Service").Collection("recipes")
+		result, err := collection.DeleteOne(context.TODO(), filter)
+		if err != nil {
+			return echo.NewHTTPError(http.StatusInternalServerError, "Could not delete ingredient")
+		}
+		if result.DeletedCount == 0 {
+			// No document was found with the provided name
+			return echo.NewHTTPError(http.StatusNotFound, "No ingredient found with the given Object Id")
+		}
+
+		return c.JSON(http.StatusOK, map[string]interface{}{
+			"message": "Ingredient successfully deleted",
+			"id":      id,
 		})
 	})
 
