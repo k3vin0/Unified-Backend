@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -47,6 +49,15 @@ type Recipe struct {
 	Ingredients []Ingredient
 }
 
+func invalidateRecipeCache(cacheKey string) {
+	// Deletes the entry for a key.
+	recipeCache.Delete(cacheKey)
+}
+func invalidateIngredientsCache(cacheKey string) {
+	// Deletes the entry for a key.
+	ingredientsCache.Delete(cacheKey)
+}
+
 func getIngredientByID(client *mongo.Client, ingredientID string) (*Ingredient, error) {
 	collection := client.Database("Recipe_Service").Collection("Ingredients")
 	objID, err := primitive.ObjectIDFromHex(ingredientID)
@@ -66,13 +77,19 @@ func getIngredientByID(client *mongo.Client, ingredientID string) (*Ingredient, 
 	return &ingredient, nil
 }
 
+var recipeCache sync.Map
+var ingredientsCache sync.Map
+
 func getAllRecipes(client *mongo.Client) (*[]Recipe, error) {
+	if cached, ok := recipeCache.Load("allRecipes"); ok {
+		return cached.(*[]Recipe), nil
+	}
 	collection := client.Database("Recipe_Service").Collection("recipes")
 	filter := bson.D{{}}
 
 	cur, err := collection.Find(context.TODO(), filter)
 	if err != nil {
-		return nil, err // Consider how to handle errors more gracefully
+		return nil, err
 	}
 	defer cur.Close(context.TODO())
 
@@ -80,31 +97,62 @@ func getAllRecipes(client *mongo.Client) (*[]Recipe, error) {
 	if err = cur.All(context.TODO(), &results); err != nil {
 		return nil, err
 	}
-	var ingredientsResponse []Ingredient
-	var finalReturnValue []Recipe = make([]Recipe, 0)
-	for _, ingredient := range results {
-		for _, id := range ingredient.ID {
 
-			ingredient, err := getIngredientByID(client, id.ObjectID)
-			if err != nil {
-				return nil, err
+	// Prepare a channel to collect errors that might occur in goroutines.
+	errChan := make(chan error, 1)
+	// Prepare a wait group to synchronize all goroutines.
+	var wg sync.WaitGroup
+
+	finalReturnValue := make([]Recipe, len(results))
+
+	for i, recipeItem := range results {
+		wg.Add(1) // Increment the WaitGroup counter.
+		go func(i int, recipeItem RecipeReturnType) {
+			defer wg.Done() // Decrement the counter when the goroutine completes.
+
+			var ingredientsResponse []Ingredient
+			for _, id := range recipeItem.ID {
+				ingredient, err := getIngredientByID(client, id.ObjectID)
+				if err != nil {
+					errChan <- err // Send any error that occurs to the error channel.
+					return
+				}
+				ingredientsResponse = append(ingredientsResponse, *ingredient)
 			}
-			ingredientsResponse = append(ingredientsResponse, *ingredient)
-		}
-		finalReturnValue = append(finalReturnValue, Recipe{Name: ingredient.Name, Ingredients: ingredientsResponse})
 
-		fmt.Printf("Name: %s, Calories: %v\n", ingredient.Name, ingredient.ID)
+			finalReturnValue[i] = Recipe{Name: recipeItem.Name, Ingredients: ingredientsResponse}
+		}(i, recipeItem)
 	}
 
-	return &finalReturnValue, err
+	// Wait for all goroutines to finish.
+	wg.Wait()
+	close(errChan) // Close the error channel.
+
+	// Check if any errors were reported by the goroutines.
+	for err := range errChan {
+		if err != nil {
+			return nil, err
+		}
+	}
+	recipeCache.Store("allRecipes", &finalReturnValue)
+
+	return &finalReturnValue, nil
 }
 
 // TODO: Implement HTTP handlers
 func Handler(client *mongo.Client) {
 	e := echo.New()
 	e.Use(middleware.Logger())
+	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
+		AllowOrigins: []string{"http://localhost:5173", "http://192.168.1.13:5173"}, // Be cautious with *, specify origins if possible
+		AllowMethods: []string{http.MethodGet, http.MethodPut, http.MethodPost, http.MethodDelete},
+	}))
 
 	e.GET("/ingredients", func(c echo.Context) error {
+		if cached, ok := ingredientsCache.Load("allIngredients"); ok {
+			// If present in the cache, send the cached data.
+			return c.JSON(http.StatusOK, cached.(*[]Ingredient))
+		}
 		collection := client.Database("Recipe_Service").Collection("Ingredients")
 		filter := bson.D{{}}
 
@@ -119,7 +167,7 @@ func Handler(client *mongo.Client) {
 			log.Fatal(err)
 		}
 
-		fmt.Print(results)
+		ingredientsCache.Store("allIngredients", &results)
 
 		for _, ingredient := range results {
 			fmt.Printf("Name: %s, Ingredient: %d\n", ingredient.Name, ingredient.Calories)
@@ -165,7 +213,6 @@ func Handler(client *mongo.Client) {
 		// Prepare a slice of interface{} to hold the documents for insertion
 		var docs []interface{}
 		for _, ingredient := range newIngredients {
-			// fmt.Print(ingredient.ObjectID)
 			docs = append(docs, ingredient)
 		}
 
@@ -211,7 +258,7 @@ func Handler(client *mongo.Client) {
 			// Handle error appropriately
 			return echo.NewHTTPError(http.StatusInternalServerError, "Failed to insert recipes")
 		}
-
+		invalidateRecipeCache("allRecipes")
 		// Respond with the result of the insert operation
 		return c.JSON(http.StatusCreated, result.InsertedIDs)
 	})
@@ -229,8 +276,7 @@ func Handler(client *mongo.Client) {
 			// No document was found with the provided name
 			return echo.NewHTTPError(http.StatusNotFound, "No ingredient found with the given name")
 		}
-
-		fmt.Print(result)
+		invalidateIngredientsCache("allIngredients")
 		return c.JSON(http.StatusOK, map[string]interface{}{
 			"message": "Ingredient successfully deleted",
 			"name":    name,
@@ -255,11 +301,15 @@ func Handler(client *mongo.Client) {
 			return echo.NewHTTPError(http.StatusNotFound, "No ingredient found with the given Object Id")
 		}
 
+		invalidateRecipeCache("allRecipes")
+
 		return c.JSON(http.StatusOK, map[string]interface{}{
 			"message": "Ingredient successfully deleted",
 			"id":      id,
 		})
 	})
+
+	// e.GET("/debug/pprof/*", echo.WrapHandler(http.DefaultServeMux))
 
 	go func() {
 		if err := e.Start(":42069"); err != nil {
