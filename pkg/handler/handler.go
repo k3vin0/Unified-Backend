@@ -170,7 +170,7 @@ func Handler(client *mongo.Client) {
 		ingredientsCache.Store("allIngredients", &results)
 
 		for _, ingredient := range results {
-			fmt.Printf("Name: %s, Ingredient: %d\n", ingredient.Name, ingredient.Calories)
+			fmt.Printf("Name: %s, Calories: %d\n", ingredient.Name, ingredient.Calories)
 		}
 		return c.JSON(200, results)
 	})
