@@ -23,7 +23,7 @@ type IngredientsResult = []Ingredient
 type RecipeResult = []RecipeReturnType
 
 type Ingredient struct {
-	ObjectID primitive.ObjectID `bson:"_id"`
+	ObjectID primitive.ObjectID `bson:"_id, omitempty"`
 	Name     string             `bson:"name"`
 	Calories int                `bson:"calories_per_gram"`
 }
@@ -203,6 +203,10 @@ func Handler(client *mongo.Client) {
 	})
 
 	e.POST("/ingredients", func(c echo.Context) error {
+		type Ingredient struct {
+			Name     string
+			Calories int
+		}
 		var newIngredients []Ingredient // Assuming Ingredient is your struct type for the collection
 
 		// Bind the request body to newIngredients slice
@@ -221,8 +225,11 @@ func Handler(client *mongo.Client) {
 		result, err := collection.InsertMany(context.TODO(), docs)
 		if err != nil {
 			// Handle error appropriately
+			fmt.Print((err))
 			return echo.NewHTTPError(http.StatusInternalServerError, "Failed to insert ingredients")
 		}
+
+		ingredientsCache.Delete("allIngredients")
 
 		// Respond with the result of the insert operation
 		return c.JSON(http.StatusCreated, result.InsertedIDs)
@@ -301,7 +308,7 @@ func Handler(client *mongo.Client) {
 			return echo.NewHTTPError(http.StatusNotFound, "No ingredient found with the given Object Id")
 		}
 
-		invalidateRecipeCache("allRecipes")
+		invalidateRecipeCache("allIngredients")
 
 		return c.JSON(http.StatusOK, map[string]interface{}{
 			"message": "Ingredient successfully deleted",
