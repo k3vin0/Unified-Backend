@@ -261,6 +261,53 @@ func Handler(client *mongo.Client) {
 		})
 	})
 
+	e.PUT("/ingredients/:id", func(c echo.Context) error {
+		// Extract the ingredient ID from the URL parameter.
+		id := c.Param("id")
+
+		// Define a struct for the request body. Here, we allow either field to be updated.
+		type updateRequest struct {
+			Name     *string `json:"name,omitempty"`
+			Calories *int    `json:"calories,omitempty"`
+		}
+		var updateData updateRequest
+
+		// Bind the request body to the struct.
+		if err := c.Bind(&updateData); err != nil {
+			return echo.NewHTTPError(http.StatusBadRequest, "Invalid input")
+		}
+
+		// Create an update document based on the provided data.
+		update := bson.M{}
+		if updateData.Name != nil {
+			update["name"] = *updateData.Name
+		}
+		if updateData.Calories != nil {
+			update["calories_per_gram"] = *updateData.Calories
+		}
+
+		// Get the repository and perform the update.
+		ingredientsRepository := repository.NewIngredientRepository(client)
+		updatedIngredient, err := ingredientsRepository.UpdateByID(context.TODO(), id, update)
+
+		if err != nil {
+			return echo.NewHTTPError(http.StatusInternalServerError, "Could not update ingredient")
+		}
+
+		if updatedIngredient == nil {
+			// No document was found with the provided ID.
+			return echo.NewHTTPError(http.StatusNotFound, "No ingredient found with the given ID")
+		}
+
+		cache.InvalidateIngredientsCache("allIngredients")
+
+		// Return the updated ingredient and a success message.
+		return c.JSON(http.StatusOK, map[string]interface{}{
+			"message":    "Ingredient successfully updated",
+			"ingredient": updatedIngredient,
+		})
+	})
+
 	// e.GET("/debug/pprof/*", echo.WrapHandler(http.DefaultServeMux))
 
 	go func() {
