@@ -2,6 +2,8 @@ package handler
 
 import (
 	"context"
+	"dynamicrecipes/pkg/model"
+	"dynamicrecipes/pkg/repository"
 	"fmt"
 	"log"
 	"net/http"
@@ -20,36 +22,6 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
-type IngredientsResult = []Ingredient
-type RecipeResult = []RecipeReturnType
-
-type Ingredient struct {
-	ObjectID primitive.ObjectID `bson:"_id, omitempty"`
-	Name     string             `bson:"name"`
-	Calories int                `bson:"calories_per_gram"`
-}
-
-type RecipeReturnType struct {
-	Name string             `bson:"name"`
-	ID   []IngredientIDType `bson:"ingredients"`
-}
-
-// IngredientIDType to match the incoming JSON structure for ingredients.
-type IngredientIDType struct {
-	ObjectID string `json:"ObjectID"`
-}
-
-// RecipePostType adjusted to include a slice of IngredientIDType.
-type RecipePostType struct {
-	Name        string             `json:"Name"`
-	Ingredients []IngredientIDType `json:"Ingredients"`
-}
-
-type Recipe struct {
-	Name        string
-	Ingredients []Ingredient
-}
-
 func invalidateRecipeCache(cacheKey string) {
 	// Deletes the entry for a key.
 	recipeCache.Delete(cacheKey)
@@ -59,31 +31,12 @@ func invalidateIngredientsCache(cacheKey string) {
 	ingredientsCache.Delete(cacheKey)
 }
 
-func getIngredientByID(client *mongo.Client, ingredientID string) (*Ingredient, error) {
-	collection := client.Database("Recipe_Service").Collection("Ingredients")
-	objID, err := primitive.ObjectIDFromHex(ingredientID)
-
-	if err != nil {
-		return nil, err
-	}
-
-	filter := bson.D{{Key: "_id", Value: objID}}
-
-	var ingredient Ingredient
-	err = collection.FindOne(context.TODO(), filter).Decode(&ingredient)
-	if err != nil {
-		return nil, err
-	}
-
-	return &ingredient, nil
-}
-
 var recipeCache sync.Map
 var ingredientsCache sync.Map
 
-func getAllRecipes(client *mongo.Client) (*[]Recipe, error) {
+func getAllRecipes(client *mongo.Client) (*[]model.Recipe, error) {
 	if cached, ok := recipeCache.Load("allRecipes"); ok {
-		return cached.(*[]Recipe), nil
+		return cached.(*[]model.Recipe), nil
 	}
 	collection := client.Database("Recipe_Service").Collection("recipes")
 	filter := bson.D{{}}
@@ -94,7 +47,7 @@ func getAllRecipes(client *mongo.Client) (*[]Recipe, error) {
 	}
 	defer cur.Close(context.TODO())
 
-	var results RecipeResult
+	var results model.RecipeResult
 	if err = cur.All(context.TODO(), &results); err != nil {
 		return nil, err
 	}
@@ -104,16 +57,17 @@ func getAllRecipes(client *mongo.Client) (*[]Recipe, error) {
 	// Prepare a wait group to synchronize all goroutines.
 	var wg sync.WaitGroup
 
-	finalReturnValue := make([]Recipe, len(results))
+	finalReturnValue := make([]model.Recipe, len(results))
+	ingredientRepo := repository.NewIngredientRepository(client)
 
 	for i, recipeItem := range results {
 		wg.Add(1) // Increment the WaitGroup counter.
-		go func(i int, recipeItem RecipeReturnType) {
+		go func(i int, recipeItem model.RecipeReturnType) {
 			defer wg.Done() // Decrement the counter when the goroutine completes.
 
-			var ingredientsResponse []Ingredient
+			var ingredientsResponse []model.Ingredient
 			for _, id := range recipeItem.ID {
-				ingredient, err := getIngredientByID(client, id.ObjectID)
+				ingredient, err := ingredientRepo.FindByID(context.TODO(), id.ObjectID)
 				if err != nil {
 					errChan <- err // Send any error that occurs to the error channel.
 					return
@@ -121,7 +75,7 @@ func getAllRecipes(client *mongo.Client) (*[]Recipe, error) {
 				ingredientsResponse = append(ingredientsResponse, *ingredient)
 			}
 
-			finalReturnValue[i] = Recipe{Name: recipeItem.Name, Ingredients: ingredientsResponse}
+			finalReturnValue[i] = model.Recipe{Name: recipeItem.Name, Ingredients: ingredientsResponse}
 		}(i, recipeItem)
 	}
 
@@ -152,7 +106,7 @@ func Handler(client *mongo.Client) {
 	e.GET("/ingredients", func(c echo.Context) error {
 		if cached, ok := ingredientsCache.Load("allIngredients"); ok {
 			// If present in the cache, send the cached data.
-			return c.JSON(http.StatusOK, cached.(*[]Ingredient))
+			return c.JSON(http.StatusOK, cached.(*[]model.Ingredient))
 		}
 		collection := client.Database("Recipe_Service").Collection("Ingredients")
 		filter := bson.D{{}}
@@ -163,7 +117,7 @@ func Handler(client *mongo.Client) {
 		}
 		defer cur.Close(context.TODO())
 
-		var results IngredientsResult
+		var results model.IngredientsResult
 		if err = cur.All(context.TODO(), &results); err != nil {
 			log.Fatal(err)
 		}
@@ -183,7 +137,9 @@ func Handler(client *mongo.Client) {
 			return echo.NewHTTPError(http.StatusBadRequest, "No params provided")
 		}
 
-		ingredient, err := getIngredientByID(client, idStr)
+		ingredientsRepo := repository.NewIngredientRepository(client)
+
+		ingredient, err := ingredientsRepo.FindByID(context.TODO(), idStr)
 
 		if err != nil {
 			echo.NewHTTPError(http.StatusInternalServerError, "No Ingredient with specified id ")
@@ -194,7 +150,6 @@ func Handler(client *mongo.Client) {
 	})
 
 	e.GET("/recipes", func(c echo.Context) error {
-
 		result, err := getAllRecipes(client)
 		if err != nil {
 			return echo.NewHTTPError(http.StatusInternalServerError, "unable to fetch recipes")
@@ -209,23 +164,16 @@ func Handler(client *mongo.Client) {
 			Calories int    `bson:"calories_per_gram"`
 		}
 		var newIngredients []Ingredient // Assuming Ingredient is your struct type for the collection
-
 		// fmt.Print(c)
 		// Bind the request body to newIngredients slice
 		if err := c.Bind(&newIngredients); err != nil {
 			return echo.NewHTTPError(http.StatusBadRequest, "Invalid input")
 		}
-
-		// fmt.Print(c)
-
 		// Prepare a slice of interface{} to hold the documents for insertion
 		var docs []interface{}
 		for _, ingredient := range newIngredients {
 			docs = append(docs, ingredient)
 		}
-
-		fmt.Print(docs)
-
 		// Inserting the documents into the collection
 		collection := client.Database("Recipe_Service").Collection("Ingredients")
 		result, err := collection.InsertMany(context.TODO(), docs)
@@ -242,7 +190,7 @@ func Handler(client *mongo.Client) {
 	})
 
 	e.POST("/recipes", func(c echo.Context) error {
-		var newRecipes []RecipePostType // Assuming Recipes is your struct type for the collection
+		var newRecipes []model.RecipePostType // Assuming Recipes is your struct type for the collection
 
 		// Bind the request body to newRecipes slice
 		if err := c.Bind(&newRecipes); err != nil {
@@ -255,7 +203,7 @@ func Handler(client *mongo.Client) {
 			// Convert IngredientIDType to primitive.ObjectID
 			for i, ingredient := range recipe.Ingredients {
 				if oid, err := primitive.ObjectIDFromHex(ingredient.ObjectID); err == nil {
-					recipe.Ingredients[i] = IngredientIDType{ObjectID: oid.Hex()}
+					recipe.Ingredients[i] = model.IngredientIDType{ObjectID: oid.Hex()}
 				} else {
 					// Handle error if conversion fails
 					return echo.NewHTTPError(http.StatusBadRequest, "Invalid ObjectID in Ingredients")
@@ -283,18 +231,21 @@ func Handler(client *mongo.Client) {
 			return echo.NewHTTPError(http.StatusBadRequest, "Invalid search parameter")
 		}
 
-		filter := bson.M{"name": decodedParam}
+		ingredientsRepository := repository.NewIngredientRepository(client)
 
-		collection := client.Database("Recipe_Service").Collection("Ingredients")
-		result, err := collection.DeleteOne(context.TODO(), filter)
+		result, err := ingredientsRepository.DeleteByName(context.TODO(), decodedParam)
+
 		if err != nil {
 			return echo.NewHTTPError(http.StatusInternalServerError, "Could not delete ingredient")
 		}
+
 		if result.DeletedCount == 0 {
 			// No document was found with the provided name
 			return echo.NewHTTPError(http.StatusNotFound, "No ingredient found with the given name")
 		}
+
 		invalidateIngredientsCache("allIngredients")
+
 		return c.JSON(http.StatusOK, map[string]interface{}{
 			"message": "Ingredient successfully deleted",
 			"name":    decodedParam,
@@ -308,8 +259,8 @@ func Handler(client *mongo.Client) {
 		}
 
 		filter := bson.D{{Key: "_id", Value: objID}}
-
 		collection := client.Database("Recipe_Service").Collection("recipes")
+
 		result, err := collection.DeleteOne(context.TODO(), filter)
 		if err != nil {
 			return echo.NewHTTPError(http.StatusInternalServerError, "Could not delete ingredient")
@@ -318,9 +269,7 @@ func Handler(client *mongo.Client) {
 			// No document was found with the provided name
 			return echo.NewHTTPError(http.StatusNotFound, "No ingredient found with the given Object Id")
 		}
-
 		invalidateRecipeCache("allIngredients")
-
 		return c.JSON(http.StatusOK, map[string]interface{}{
 			"message": "Ingredient successfully deleted",
 			"id":      id,
@@ -346,6 +295,5 @@ func Handler(client *mongo.Client) {
 	if err := e.Shutdown(ctx); err != nil {
 		e.Logger.Fatal(err)
 	}
-
 	e.Logger.Info("Server gracefully stopped")
 }
