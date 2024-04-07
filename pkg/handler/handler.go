@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	_ "net/http/pprof"
+	"net/url"
 	"os"
 	"os/signal"
 	"sync"
@@ -144,7 +145,7 @@ func Handler(client *mongo.Client) {
 	e := echo.New()
 	e.Use(middleware.Logger())
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
-		AllowOrigins: []string{"http://localhost:5173", "http://192.168.1.13:5173"}, // Be cautious with *, specify origins if possible
+		AllowOrigins: []string{"http://localhost:5173", "http://192.168.1.13:5173", "http://192.168.1.6:5173"}, // Be cautious with *, specify origins if possible
 		AllowMethods: []string{http.MethodGet, http.MethodPut, http.MethodPost, http.MethodDelete},
 	}))
 
@@ -169,9 +170,9 @@ func Handler(client *mongo.Client) {
 
 		ingredientsCache.Store("allIngredients", &results)
 
-		for _, ingredient := range results {
-			fmt.Printf("Name: %s, Calories: %d\n", ingredient.Name, ingredient.Calories)
-		}
+		// for _, ingredient := range results {
+		// 	fmt.Printf("Name: %s, Calories: %d\n", ingredient.Name, ingredient.Calories)
+		// }
 		return c.JSON(200, results)
 	})
 
@@ -204,21 +205,26 @@ func Handler(client *mongo.Client) {
 
 	e.POST("/ingredients", func(c echo.Context) error {
 		type Ingredient struct {
-			Name     string
-			Calories int
+			Name     string `bson:"name"`
+			Calories int    `bson:"calories_per_gram"`
 		}
 		var newIngredients []Ingredient // Assuming Ingredient is your struct type for the collection
 
+		// fmt.Print(c)
 		// Bind the request body to newIngredients slice
 		if err := c.Bind(&newIngredients); err != nil {
 			return echo.NewHTTPError(http.StatusBadRequest, "Invalid input")
 		}
+
+		// fmt.Print(c)
 
 		// Prepare a slice of interface{} to hold the documents for insertion
 		var docs []interface{}
 		for _, ingredient := range newIngredients {
 			docs = append(docs, ingredient)
 		}
+
+		fmt.Print(docs)
 
 		// Inserting the documents into the collection
 		collection := client.Database("Recipe_Service").Collection("Ingredients")
@@ -271,8 +277,13 @@ func Handler(client *mongo.Client) {
 	})
 	e.DELETE("/ingredients/:name", func(c echo.Context) error {
 		name := c.Param("name")
+		decodedParam, err := url.QueryUnescape(name)
+		if err != nil {
+			// handle the error
+			return echo.NewHTTPError(http.StatusBadRequest, "Invalid search parameter")
+		}
 
-		filter := bson.M{"name": name}
+		filter := bson.M{"name": decodedParam}
 
 		collection := client.Database("Recipe_Service").Collection("Ingredients")
 		result, err := collection.DeleteOne(context.TODO(), filter)
@@ -286,7 +297,7 @@ func Handler(client *mongo.Client) {
 		invalidateIngredientsCache("allIngredients")
 		return c.JSON(http.StatusOK, map[string]interface{}{
 			"message": "Ingredient successfully deleted",
-			"name":    name,
+			"name":    decodedParam,
 		})
 	})
 	e.DELETE("/recipes/:id", func(c echo.Context) error {
