@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"dynamicrecipes/pkg/cache"
 	"dynamicrecipes/pkg/model"
 	"dynamicrecipes/pkg/repository"
 	"fmt"
@@ -22,21 +23,9 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
-func invalidateRecipeCache(cacheKey string) {
-	// Deletes the entry for a key.
-	recipeCache.Delete(cacheKey)
-}
-func invalidateIngredientsCache(cacheKey string) {
-	// Deletes the entry for a key.
-	ingredientsCache.Delete(cacheKey)
-}
-
-var recipeCache sync.Map
-var ingredientsCache sync.Map
-
 func getAllRecipes(client *mongo.Client) (*[]model.Recipe, error) {
-	if cached, ok := recipeCache.Load("allRecipes"); ok {
-		return cached.(*[]model.Recipe), nil
+	if cachedRecipes, ok := cache.LoadRecipesCache("allRecipes"); ok {
+		return cachedRecipes, nil
 	}
 	collection := client.Database("Recipe_Service").Collection("recipes")
 	filter := bson.D{{}}
@@ -89,7 +78,7 @@ func getAllRecipes(client *mongo.Client) (*[]model.Recipe, error) {
 			return nil, err
 		}
 	}
-	recipeCache.Store("allRecipes", &finalReturnValue)
+	cache.StoreRecipesInCache("allRecipes", &finalReturnValue)
 
 	return &finalReturnValue, nil
 }
@@ -104,9 +93,8 @@ func Handler(client *mongo.Client) {
 	}))
 
 	e.GET("/ingredients", func(c echo.Context) error {
-		if cached, ok := ingredientsCache.Load("allIngredients"); ok {
-			// If present in the cache, send the cached data.
-			return c.JSON(http.StatusOK, cached.(*[]model.Ingredient))
+		if cachedIngredients, ok := cache.LoadIngredientsCache("allIngredients"); ok {
+			return c.JSON(http.StatusOK, cachedIngredients)
 		}
 		collection := client.Database("Recipe_Service").Collection("Ingredients")
 		filter := bson.D{{}}
@@ -121,13 +109,12 @@ func Handler(client *mongo.Client) {
 		if err = cur.All(context.TODO(), &results); err != nil {
 			log.Fatal(err)
 		}
-
-		ingredientsCache.Store("allIngredients", &results)
+		cache.StoreIngredientsInCache("allIngredients", &results)
 
 		// for _, ingredient := range results {
 		// 	fmt.Printf("Name: %s, Calories: %d\n", ingredient.Name, ingredient.Calories)
 		// }
-		return c.JSON(200, results)
+		return c.JSON(http.StatusOK, results)
 	})
 
 	e.GET("/ingredient", func(c echo.Context) error {
@@ -183,8 +170,7 @@ func Handler(client *mongo.Client) {
 			return echo.NewHTTPError(http.StatusInternalServerError, "Failed to insert ingredients")
 		}
 
-		ingredientsCache.Delete("allIngredients")
-
+		cache.InvalidateIngredientsCache("allIngredients")
 		// Respond with the result of the insert operation
 		return c.JSON(http.StatusCreated, result.InsertedIDs)
 	})
@@ -219,7 +205,7 @@ func Handler(client *mongo.Client) {
 			// Handle error appropriately
 			return echo.NewHTTPError(http.StatusInternalServerError, "Failed to insert recipes")
 		}
-		invalidateRecipeCache("allRecipes")
+		cache.InvalidateRecipesCache("allRecipes")
 		// Respond with the result of the insert operation
 		return c.JSON(http.StatusCreated, result.InsertedIDs)
 	})
@@ -244,8 +230,7 @@ func Handler(client *mongo.Client) {
 			return echo.NewHTTPError(http.StatusNotFound, "No ingredient found with the given name")
 		}
 
-		invalidateIngredientsCache("allIngredients")
-
+		cache.InvalidateIngredientsCache("allIngredients")
 		return c.JSON(http.StatusOK, map[string]interface{}{
 			"message": "Ingredient successfully deleted",
 			"name":    decodedParam,
@@ -269,7 +254,7 @@ func Handler(client *mongo.Client) {
 			// No document was found with the provided name
 			return echo.NewHTTPError(http.StatusNotFound, "No ingredient found with the given Object Id")
 		}
-		invalidateRecipeCache("allIngredients")
+		cache.InvalidateRecipesCache("allRecipes")
 		return c.JSON(http.StatusOK, map[string]interface{}{
 			"message": "Ingredient successfully deleted",
 			"id":      id,
