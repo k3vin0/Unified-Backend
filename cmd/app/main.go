@@ -17,7 +17,6 @@ func CreateMongoClient(ctx context.Context, opts *options.ClientOptions) (*mongo
 	client, err := mongo.Connect(ctx, opts)
 	if err != nil {
 		log.Fatalf("Failed to connect to MongoDB: %v", err)
-		log.Default()
 		return nil, err
 	}
 
