@@ -4,16 +4,29 @@ package config
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"os"
 
+	"github.com/joho/godotenv"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 func Config(ctx context.Context) (*mongo.Client, error) {
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatal("Error loading .env file")
+		return nil, err
+	}
+
+	// Get the value of the environment variable
+	connectionString := os.Getenv("MONGODB_URI_STRING")
+	fmt.Println("Connection string:", connectionString)
+
 	serverAPI := options.ServerAPI(options.ServerAPIVersion1)
 
-	opts := options.Client().ApplyURI("mongodb+srv://kevinoagyemang:rFVaaH33lUS7YzWW@test.iuemrsv.mongodb.net/?retryWrites=true&w=majority&appName=test").SetServerAPIOptions(serverAPI)
+	opts := options.Client().ApplyURI(connectionString).SetServerAPIOptions(serverAPI)
 
 	client, err := mongo.Connect(ctx, opts)
 	if err != nil {
