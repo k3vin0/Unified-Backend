@@ -10,11 +10,7 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"net/url"
-	"os"
-	"os/signal"
 	"sync"
-	"syscall"
-	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
@@ -84,12 +80,18 @@ func getAllRecipes(client *mongo.Client) (*[]model.Recipe, error) {
 }
 
 // TODO: Implement HTTP handlers
-func Handler(client *mongo.Client) {
-	e := echo.New()
+func InitRoutes(e *echo.Echo, client *mongo.Client) {
 	e.Use(middleware.Logger())
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
 		AllowOrigins: []string{"http://localhost:5173", "http://192.168.1.13:5173", "http://192.168.1.6:5173"}, // Be cautious with *, specify origins if possible
 		AllowMethods: []string{http.MethodGet, http.MethodPut, http.MethodPost, http.MethodDelete},
+	}))
+
+	e.Use(middleware.LoggerWithConfig(middleware.LoggerConfig{
+		Skipper: func(c echo.Context) bool {
+			// Don't log if the request is for the WebSocket endpoint
+			return c.Path() == "/ws"
+		},
 	}))
 
 	e.GET("/ingredients", func(c echo.Context) error {
@@ -308,24 +310,8 @@ func Handler(client *mongo.Client) {
 		})
 	})
 
+	e.GET("/ws", HandleWebSocketConnection)
+
 	// e.GET("/debug/pprof/*", echo.WrapHandler(http.DefaultServeMux))
 
-	go func() {
-		if err := e.Start(":42069"); err != nil {
-			e.Logger.Fatal("Error starting Echo server:", err)
-		}
-	}()
-
-	// Set up channel on which to receive SIGINT signals for graceful shutdown
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
-
-	// Wait for interrupt signal to gracefully shut down the server with a timeout of 10 seconds.
-	<-quit
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := e.Shutdown(ctx); err != nil {
-		e.Logger.Fatal(err)
-	}
-	e.Logger.Info("Server gracefully stopped")
 }

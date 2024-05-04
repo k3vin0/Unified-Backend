@@ -5,9 +5,12 @@ import (
 	"dynamicrecipes/pkg/config"
 	"dynamicrecipes/pkg/handler"
 	"log"
+	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
+	"github.com/labstack/echo/v4"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -18,7 +21,6 @@ func CreateMongoClient(ctx context.Context, opts *options.ClientOptions) (*mongo
 	if err != nil {
 		log.Fatalf("Failed to connect to MongoDB: %v", err)
 		return nil, err
-
 	}
 
 	// Optional: Confirm the connection is successful
@@ -31,22 +33,46 @@ func CreateMongoClient(ctx context.Context, opts *options.ClientOptions) (*mongo
 
 	return client, nil
 }
+
 func main() {
-	// TODO: Implement
+	e := echo.New() // Initialize a new Echo instance
+
+	// Context to handle signals for graceful shutdown
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	mongoClient, err := config.Config(ctx)
+	// Configuration and MongoDB client setup
+	mongoClient, err := config.Config(ctx) // Assuming this is a function that configures and connects a MongoDB client
 	if err != nil {
 		log.Fatalf("Error: %s", err)
 	}
 
-	handler.Handler(mongoClient)
-	// Now you can use the client for database operations
+	handler.InitRoutes(e, mongoClient) // Setup your routes, assuming you have a function to do this
 
-	// Don't forget to disconnect the client when you're done
-	<-ctx.Done()
-	// Gracefully shutdown other services if needed
-	stop()
-	_ = mongoClient.Disconnect(context.Background())
+	go handler.StartBroadcasting()
+
+	// Start server in a goroutine to allow it to run concurrently with the graceful shutdown logic
+	go func() {
+		if err := e.Start(":42069"); err != nil {
+			e.Logger.Fatal("Error starting Echo server:", err)
+		}
+	}()
+
+	// Set up channel on which to receive SIGINT signals for graceful shutdown
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
+
+	// Wait for interrupt signal to gracefully shut down the server with a timeout of 10 seconds
+	<-quit
+	shutdownCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := e.Shutdown(shutdownCtx); err != nil {
+		e.Logger.Fatal("Server shutdown failed:", err)
+	}
+	e.Logger.Info("Server gracefully stopped")
+
+	// Don't forget to disconnect the MongoDB client
+	if err := mongoClient.Disconnect(ctx); err != nil {
+		log.Printf("Error disconnecting MongoDB: %v", err)
+	}
 }

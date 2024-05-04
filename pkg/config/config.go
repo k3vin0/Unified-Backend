@@ -4,7 +4,6 @@ package config
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"os"
 
@@ -22,7 +21,6 @@ func Config(ctx context.Context) (*mongo.Client, error) {
 
 	// Get the value of the environment variable
 	connectionString := os.Getenv("MONGODB_URI_STRING")
-	fmt.Println("Connection string:", connectionString)
 
 	serverAPI := options.ServerAPI(options.ServerAPIVersion1)
 
