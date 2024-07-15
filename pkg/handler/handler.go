@@ -10,6 +10,7 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"net/url"
+	"os"
 	"sync"
 
 	"github.com/labstack/echo/v4"
@@ -83,7 +84,7 @@ func getAllRecipes(client *mongo.Client) (*[]model.Recipe, error) {
 func InitRoutes(e *echo.Echo, client *mongo.Client) {
 	e.Use(middleware.Logger())
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
-		AllowOrigins: []string{"http://localhost:5173", "http://192.168.1.13:5173", "http://192.168.1.6:5173"}, // Be cautious with *, specify origins if possible
+		AllowOrigins: []string{os.Getenv("LOCAL_CORS_URLS")}, // Be cautious with *, specify origins if possible
 		AllowMethods: []string{http.MethodGet, http.MethodPut, http.MethodPost, http.MethodDelete},
 	}))
 
