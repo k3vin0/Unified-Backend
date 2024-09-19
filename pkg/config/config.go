@@ -15,7 +15,7 @@ import (
 func Config(ctx context.Context) (*mongo.Client, error) {
 	err := godotenv.Load()
 	if err != nil {
-		log.Fatal("Error loading .env file")
+		log.Fatalf("Error loading .env file: %v", err)
 		return nil, err
 	}
 
